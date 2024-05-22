@@ -1,12 +1,13 @@
 import matplotlib.pyplot as plt
 
 
-def last_results(results, print_out=False):
+def last_results(results, is_sas=False, print_out=False):
        res = ''
-       res += ('Rewards:\n @5 : ' + str(results[-1][5]['reward']) +
+       if not is_sas:
+          res += ('Rewards:\n @5 : ' + str(results[-1][5]['reward']) +
              ' @10 : ' + str(results[-1][10]['reward']) +
              ' @15 : ' + str(results[-1][15]['reward']) + ' @20 : ' + str(results[-1][20]['reward']))
-       res += '\n\n'
+          res += '\n\n'
        res += ('Click HR:\n @5 : ' + str(results[-1][5]['click hr']) +
              ' @10 : ' + str(results[-1][10]['click hr']) +
              ' @15 : ' + str(results[-1][15]['click hr']) + ' @20 : ' + str(results[-1][20]['click hr']))
@@ -24,7 +25,7 @@ def last_results(results, print_out=False):
              ' @15 : ' + str(results[-1][15]['purchase ndcg']) + ' @20 : ' + str(results[-1][20]['purchase ndcg']))
        if print_out:
             print(res)
-            
+
        return res
 
 

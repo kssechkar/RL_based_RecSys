@@ -4,8 +4,142 @@ import pandas as pd
 import os
 import trfl
 from trfl import indexing_ops
-from Modules.utils import pad_history, calculate_hit, extract_axis_1, calculate_off, normalize
+from Modules.utils import pad_history, calculate_hit, extract_axis_1, calculate_off, normalize, sas_calc_hit
 from Modules.SASRecModules import *
+
+class SASRec:
+    def __init__(self, item_num, state_size, hidden_size=64, lr=0.001, name='SASRec_vanilla'):
+        tf.compat.v1.disable_eager_execution()
+        tf.compat.v1.disable_v2_behavior()
+
+        self.dropout_rate = 0.1
+        self.num_blocks = 1
+        self.num_heads = 1
+
+        self.hidden_size = hidden_size
+        self.item_num = item_num
+        self.state_size = state_size
+        self.learning_rate = lr
+        self.is_training = tf.compat.v1.placeholder(tf.bool, shape=())
+        self.name = name
+        
+        self.all_embeddings=self.initialize_embeddings()
+        self.inputs = tf.compat.v1.placeholder(tf.int32, [None, state_size])  # sequence of history, [batchsize,state_size]
+        self.len_state = tf.compat.v1.placeholder(tf.int32, [None])
+        self.input_emb = tf.nn.embedding_lookup(self.all_embeddings['state_embeddings'], self.inputs)
+        pos_emb = tf.nn.embedding_lookup(self.all_embeddings['pos_embeddings'],
+                                                 tf.tile(tf.expand_dims(tf.range(tf.shape(self.inputs)[1]), 0),
+                                                         [tf.shape(self.inputs)[0], 1]))
+        self.seq = self.input_emb + pos_emb
+
+        mask = tf.expand_dims(tf.cast(tf.not_equal(self.inputs, item_num), dtype=tf.float32), -1)
+        # Dropout
+        self.seq = tf.compat.v1.layers.dropout(self.seq,
+                                        rate=self.dropout_rate,
+                                        training=tf.convert_to_tensor(self.is_training))
+        self.seq *= mask
+        for i in range(self.num_blocks):
+            with tf.compat.v1.variable_scope("num_blocks_%d" % i):
+                # Self-attention
+                self.seq = multihead_attention(queries=normalize(self.seq),
+                                                keys=self.seq,
+                                                num_units=self.hidden_size,
+                                                num_heads=self.num_heads,
+                                                dropout_rate=self.dropout_rate,
+                                                is_training=self.is_training,
+                                                causality=True,
+                                                scope="self_attention")
+
+                # Feed forward
+                self.seq = feedforward(normalize(self.seq), num_units=[self.hidden_size, self.hidden_size],
+                                        dropout_rate=self.dropout_rate,
+                                        is_training=self.is_training)
+                self.seq *= mask
+
+        self.seq = normalize(self.seq)
+        self.states_hidden = extract_axis_1(self.seq, self.len_state - 1)
+        self.output= tf.compat.v1.layers.dense(self.states_hidden, self.item_num,
+                                                activation=None)  # all ce logits
+        self.actions = tf.compat.v1.placeholder(tf.int32, [None])
+        ce_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.actions, logits=self.output)
+        self.loss = tf.reduce_mean(ce_loss)
+        self.opt = tf.compat.v1.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
+        
+        
+    def initialize_embeddings(self):
+        all_embeddings = dict()
+        with tf.compat.v1.variable_scope(self.name):
+            state_embeddings = tf.Variable(tf.random.normal([self.item_num + 1, self.hidden_size], 0.0, 0.01),
+                                        name='state_embeddings')
+            pos_embeddings = tf.Variable(tf.random.normal([self.state_size, self.hidden_size], 0.0, 0.01),
+                                            name='pos_embeddings')
+            all_embeddings['state_embeddings'] = state_embeddings
+            all_embeddings['pos_embeddings'] = pos_embeddings
+        return all_embeddings
+
+def eval_sasrec(sess, SAS, eval_ses, state_size, item_num, results, topk=[5, 10, 15, 20], pickle=False, data_dir='data'):
+    if pickle:
+        eval_sessions=pd.read_pickle(os.path.join(data_dir, 'sampled_val.df'))
+    else:
+        eval_sessions = eval_ses
+    eval_ids = eval_sessions.session_id.unique()
+    groups = eval_sessions.groupby('session_id')
+    batch = 100
+    evaluated=0
+    total_clicks=0.0
+    total_purchase = 0.0
+    hit_clicks=[0,0,0,0]
+    ndcg_clicks=[0,0,0,0]
+    hit_purchase=[0,0,0,0]
+    ndcg_purchase=[0,0,0,0]
+
+    while evaluated<len(eval_ids):
+        states, len_states, actions, true_items = [], [], [], []
+        for i in range(batch):
+            if evaluated==len(eval_ids):
+                break
+            id=eval_ids[evaluated]
+            group=groups.get_group(id)
+            history=[]
+            for index, row in group.iterrows():
+                state=list(history)
+                len_states.append(state_size if len(state)>=state_size else 1 if len(state)==0 else len(state))
+                state=pad_history(state,state_size,item_num)
+                states.append(state)
+                action=row['item_id']
+                is_buy=row['is_buy']
+                true_items.append((action, is_buy))
+                if is_buy==1:
+                    total_purchase+=1.0
+                else:
+                    total_clicks+=1.0
+                actions.append(action)
+                history.append(row['item_id'])
+            evaluated+=1
+            prediction=sess.run(SAS.output, feed_dict={SAS.inputs: states,SAS.len_state: len_states,SAS.is_training:False})
+        sorted_list=np.argsort(prediction)
+        sas_calc_hit(sorted_list,topk, true_items, hit_clicks, ndcg_clicks, hit_purchase, ndcg_purchase)
+    print('total clicks: %d, total purchase:%d' % (total_clicks, total_purchase))
+    #print("THE TYPE OF NDCG IS", type(ndcg_clicks), "NDCG:", ndcg_clicks)
+    d = dict()
+    for i in range(len(topk)):
+        hr_click=hit_clicks[i]/total_clicks
+        hr_purchase=hit_purchase[i]/total_purchase
+        ng_click=ndcg_clicks[i]/total_clicks
+        ng_purchase=ndcg_purchase[i]/total_purchase
+        print('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
+        print('clicks hr ndcg @ %d : %f, %f' % (topk[i],hr_click,ng_click))
+        print('purchase hr and ndcg @%d : %f, %f' % (topk[i], hr_purchase, ng_purchase))
+        d[topk[i]] = {'click hr' : hr_click, 'click ndcg' : ng_click,
+                      'purchase hr' : hr_purchase, 'purchase ndcg' : ng_purchase}
+    results.append(d)
+    print('#############################################################')
+    
+    
+
+
+
+# ////////////////////////////////////////////////////////////////////////////// RL integrated models
 
 
 class QNetwork:

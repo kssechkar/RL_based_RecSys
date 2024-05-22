@@ -15,7 +15,7 @@ def shorten_sessions(sorted_session, n_sessions):
     print('unique:', chosen['item_id'].nunique(), 'min:', chosen['item_id'].min(), 'max:', chosen['item_id'].max())
     return chosen, itm2idx
 
-def preprocess_books(filename, is_buy_progress_criterion=65):
+def preprocess_books(filename):
     df = pd.read_csv(filename, header=0)
     df.columns = ['session_id', 'item_id', 'progress', 'rating','timestamp']
     df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -26,13 +26,27 @@ def preprocess_books(filename, is_buy_progress_criterion=65):
     df['valid_item'] = df.item_id.map(df.groupby('item_id')['session_id'].size() > 2)
     df = df.loc[df.valid_item].drop('valid_item', axis=1)
     
-    df['is_buy'] = (df['progress'] > is_buy_progress_criterion).astype(int)
-    rated_df = df[df['rating'].notnull()]
-    df = df.drop(['progress', 'rating'], axis=1)
     sorted_df = df.sort_values(by=['session_id', 'timestamp'])
-    sorted_df.to_csv('books_dataset/sorted_events.csv', index=None, header=True)
-    print(df)
-    return df, rated_df
+    sorted_df.to_csv('books_data/init_sorted_events.csv', index=None, header=True)
+    return df
+
+def set_books_reward_progress(df, is_buy_progress_criterion=75):
+    df['is_buy'] = (df['progress'] >= is_buy_progress_criterion).astype(int)
+    df = df.drop(['progress', 'rating'], axis=1)
+    df.to_csv('books_data/rating_reward_books.csv', index=None, header=True)
+    return df
+
+def set_books_reward_rating(df, is_buy_rating_criterion=4.0):
+    df['is_buy'] = (df['rating'] >= is_buy_rating_criterion).astype(int)
+    df = df.drop(['progress', 'rating'], axis=1)
+    df.to_csv('books_data/rating_reward_books.csv', index=None, header=True)
+    return df
+
+def set_books_reward_author(df, item_info_df):
+    merged_df = df.merge(item_info_df[['id', 'authors']], how='left', left_on='item_id', right_on='id')
+    merged_df['is_buy'] = merged_df.groupby(['session_id', 'authors'])['item_id'].transform(lambda x: 1 if x.nunique() > 1 else 0)
+    return merged_df
+
 
 
 def sample_data(data_dir : str, name : str, to_pickle=False):

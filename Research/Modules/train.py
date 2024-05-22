@@ -1,4 +1,4 @@
-from Modules.Model import QNetwork, evaluate
+from Modules.Model import QNetwork, evaluate, SASRec, eval_sasrec
 from Modules.utils import pad_history, calculate_hit
 import pandas as pd
 import tensorflow as tf
@@ -36,10 +36,11 @@ def train(data_stats, replay_buf, val_df, arg_dict, results, losses, configurati
     total_step=0
     sess = tf.compat.v1.Session()
     sess.run(tf.compat.v1.global_variables_initializer())
-    if to_eval:
-        evaluate(sess, QN_1, val_df, state_size, item_num, reward_click, reward_buy, results, pop_dict=pop_dict, pickle=pickle)
+    # if to_eval:
+    #     evaluate(sess, QN_1, val_df, state_size, item_num, reward_click, reward_buy, results, pop_dict=pop_dict, pickle=pickle)
     num_rows=replay_buffer.shape[0]
     num_batches=int(num_rows/arg_dict['batch_size'])
+    print(f"NUM BATCHES in 1 EPOCH: {num_batches}")
     for i in range(arg_dict['epoch']):
         print(f'$$$$ STARTING EPOCH # {i} $$$$')
         for j in range(num_batches):
@@ -145,10 +146,10 @@ def train(data_stats, replay_buf, val_df, arg_dict, results, losses, configurati
                                                 mainQN.is_training:True
                                                 })
             total_step += 1
-            if total_step % 50 == 0:
+            if total_step % 100 == 0:
                 print("the loss in %dth batch is: %f" % (total_step, loss))
                 losses.append(loss)
-            if to_eval and (total_step % 250 == 0):
+            if to_eval and (total_step % 500 == 0):
                 evaluate(sess, QN_1, val_df, state_size, item_num, reward_click, reward_buy, results, pop_dict=pop_dict, pickle=pickle)
     return QN_1, sess
 
@@ -169,8 +170,72 @@ def test(sess, QN_1, data_stats, test_df, results, r_click=0.2, r_buy=1, pickle=
     reward_buy = r_buy
     
     pop_dict=None
-    with open(os.path.join(data_directory, 'pop_dict.txt'), 'r') as f:
-        pop_dict = eval(f.read())
+    if QN_1.configuration == 'SA2C':
+        with open(os.path.join(data_directory, 'pop_dict.txt'), 'r') as f:
+            pop_dict = eval(f.read())
     
     evaluate(sess, QN_1, test_df, state_size, item_num, reward_click, reward_buy, results, pop_dict=pop_dict, pickle=pickle)
+    sess.close()
+
+
+def sas_train(data_stats, replay_buf, val_df, results, losses, batch_size=512, epochs=50,  lr=0.001, to_eval=True, pickle=False, data_dir='data'):
+    data_directory = data_dir
+    if pickle:
+        data_statis = pd.read_pickle(
+            os.path.join(data_directory, 'data_statis.df'))  # read data statistics, includeing state_size and item_num
+    else:
+        data_statis = data_stats
+    
+    state_size = data_statis['state_size'][0]
+    item_num = data_statis['item_num'][0]
+
+    tf.compat.v1.reset_default_graph()
+
+    SAS = SASRec(state_size=state_size, item_num=item_num, lr=lr, name='SASRec')
+    if pickle:
+        replay_buffer = pd.read_pickle(os.path.join(data_directory, 'replay_buffer.df'))
+    else:
+        replay_buffer = replay_buf
+
+    total_step=0
+    sess = tf.compat.v1.Session()
+    sess.run(tf.compat.v1.global_variables_initializer())
+    # if to_eval:
+    #     eval_sasrec(sess, SAS, val_df, state_size, item_num, results, pickle=pickle, data_dir=data_dir)
+    num_rows=replay_buffer.shape[0]
+    num_batches=int(num_rows/batch_size)
+    print(f"NUM BATCHES in 1 EPOCH: {num_batches}")
+    for i in range(epochs):
+        print(f'$$$$ STARTING EPOCH # {i} $$$$')
+        for j in range(num_batches):
+            batch = replay_buffer.sample(n=batch_size).to_dict()
+            state = list(batch['state'].values())
+            len_state = list(batch['len_state'].values())
+            action = list(batch['action'].values())
+            loss, _ = sess.run([SAS.loss, SAS.opt],
+                                feed_dict={SAS.inputs: state,
+                                            SAS.len_state: len_state,
+                                            SAS.actions: action,
+                                            SAS.is_training:True})
+            total_step += 1
+            if total_step % 100 == 0:
+                print("the loss in %dth batch is: %f" % (total_step, loss))
+                losses.append(loss)
+            if to_eval and (total_step % 500 == 0):
+                eval_sasrec(sess, SAS, val_df, state_size, item_num, results, pickle=pickle, data_dir=data_dir)
+    return SAS, sess
+
+
+def sas_test(sess, SAS, data_stats, test_df, results, pickle=False, data_dir='data'):
+    data_directory = data_dir
+    if pickle:
+        data_statis = pd.read_pickle(
+            os.path.join(data_directory, 'data_statis.df'))
+    else:
+        data_statis = data_stats
+    
+    state_size = data_statis['state_size'][0]  # the length of history to define the state
+    item_num = data_statis['item_num'][0]  # total number of items
+    
+    eval_sasrec(sess, SAS, test_df, state_size, item_num, results, pickle=pickle, data_dir=data_dir)
     sess.close()
