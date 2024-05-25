@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import os
 from Modules.utils import pad_history, to_pickled_df
 
@@ -15,6 +16,23 @@ def merge_consec_bookings(group):
             current_row = row
     merged_rows.append(current_row)
     return pd.DataFrame(merged_rows)
+
+def set_rewards_consecutive(filename, save_name):
+    df = pd.read_csv(filename)
+    df_new = df.copy()
+    df_new['next_city_id'] = df_new.groupby('utrip_id')['city_id'].shift(-1)
+    df_new = df_new.dropna(subset=['next_city_id'])
+    df_new.loc['next_city_id'] = df_new['next_city_id'].astype(int)
+    city_transitions = df_new.groupby(['city_id', 'next_city_id']).size().reset_index(name='count')
+    idx = city_transitions.groupby('city_id')['count'].idxmax()
+    consec_df = city_transitions.loc[idx, ['city_id', 'next_city_id']].reset_index(drop=True)
+    merged_df = pd.merge(df, consec_df, on='city_id', how='left')
+    merged_df_shifted = merged_df.copy()
+    merged_df_shifted['next_city_id'] = merged_df_shifted.groupby(['utrip_id'])['next_city_id'].shift(1)
+    merged_df_shifted['is_buy'] = (merged_df_shifted['city_id'] == merged_df_shifted['next_city_id']).astype(int)
+    merged_df['is_buy'] = merged_df_shifted['is_buy']
+    merged_df.to_csv(save_name, index=None)
+    return merged_df
 
 def set_rewards_toppop(filename, save_name, pop_ratio=0.1):
     df = pd.read_csv(filename)
@@ -78,10 +96,17 @@ def get_statistics(sampled_sessions : pd.DataFrame, train_sessions : pd.DataFram
 
     return reply_buffer, data_statis
 
-def preprocess_booking(filename, save_name, itm2idx=None):
+def preprocess_booking(filename, to_save=False, save_name='', col_n=6, itm2idx=None):
     df = pd.read_csv(filename)
-    df.columns = ['session_id', 'timestamp', 'checkout', 'item_id', 'time_at', 'is_buy']
-    df = df.drop(['checkout', 'time_at'], axis=1)
+    if col_n == 6:
+        df.columns = ['session_id', 'timestamp', 'checkout', 'item_id', 'no_need', 'is_buy']
+        df = df.drop(['checkout', 'no_need'], axis=1)
+    elif col_n == 5:
+        df.columns = ['session_id', 'timestamp', 'checkout', 'item_id', 'is_buy']
+        df = df.drop(['checkout'], axis=1)
+    else:
+        raise IndexError('Unknown format of the dataset')
+    
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     # df['valid_session'] = df.session_id.map(df.groupby('session_id')['item_id'].size() > 2)
     # df = df.loc[df.valid_session].drop('valid_session', axis=1)
@@ -90,15 +115,12 @@ def preprocess_booking(filename, save_name, itm2idx=None):
     idx2itm = {v: k for k, v in itm2idx.items()}
     df['item_id'] = df['item_id'].map(itm2idx)
     sorted_df = df.sort_values(by=['session_id', 'timestamp'])
-    sorted_df.to_csv(save_name, index=None)
+    if to_save:
+        sorted_df.to_csv(save_name, index=None)
     return sorted_df, itm2idx, idx2itm
 
-def create_pop_dict(data_dir, filename='sorted_events.df'):
-    data_directory = data_dir
-    if filename[-1] == 'f':
-        replay_buffer_behavior = pd.read_pickle(os.path.join(data_directory, filename))
-    else:
-        replay_buffer_behavior = pd.read_csv(data_directory + filename)
+def create_pop_dict(replay_buf, data_dir='data/processed/'):
+    replay_buffer_behavior = replay_buf
     total_actions=replay_buffer_behavior.shape[0]
     pop_dict={}
     for index, row in replay_buffer_behavior.iterrows():
@@ -112,5 +134,15 @@ def create_pop_dict(data_dir, filename='sorted_events.df'):
     for key in pop_dict:
         pop_dict[key]=float(pop_dict[key])/float(total_actions)
 
-    with open('pop_dict.txt', 'w') as f:
+    with open(data_dir + 'pop_dict.txt', 'w') as f:
         f.write(str(pop_dict))
+
+def shorten_sessions(sorted_session, n_sessions):
+    all_sessions = sorted_session['session_id'].unique()
+    chosen_sess = np.random.choice(all_sessions, size=n_sessions, replace=False)
+    chosen = sorted_session.loc[sorted_session['session_id'].isin(chosen_sess)].copy()
+    
+    itm2idx = {k: i for i, k in enumerate(set(chosen['item_id'].unique()))}
+    chosen['item_id'] = chosen['item_id'].map(itm2idx)
+    print('unique:', chosen['item_id'].nunique(), 'min:', chosen['item_id'].min(), 'max:', chosen['item_id'].max())
+    return chosen, itm2idx

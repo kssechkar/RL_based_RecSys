@@ -3,9 +3,10 @@ import os
 import tensorflow as tf
 from Modules.Network import QNetwork
 import numpy as np
+from Modules.utils import pad_history
 
 
-def train_no_eval(data_stats, replay_buf, arg_dict, losses, configuration='DQN', sa2c_switch_step=10000, pickle=False, data_dir='data'):
+def train_no_eval(data_stats, replay_buf, arg_dict, losses, configuration='DQN', sa2c_switch_step=10000, pickle=False, data_dir='data/processed'):
     # Network parameters
     data_directory = data_dir
     if pickle:
@@ -44,6 +45,7 @@ def train_no_eval(data_stats, replay_buf, arg_dict, losses, configuration='DQN',
     num_rows=replay_buffer.shape[0]
     num_batches=int(num_rows/arg_dict['batch_size'])
     for i in range(arg_dict['epoch']):
+        print(f'$$$$$$$ STARTING EPOCH {i} $$$$$$$')
         for j in range(num_batches):
             batch = replay_buffer.sample(n=arg_dict['batch_size']).to_dict()
 

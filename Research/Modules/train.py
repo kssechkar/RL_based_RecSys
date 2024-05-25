@@ -149,7 +149,7 @@ def train(data_stats, replay_buf, val_df, arg_dict, results, losses, configurati
             if total_step % 100 == 0:
                 print("the loss in %dth batch is: %f" % (total_step, loss))
                 losses.append(loss)
-            if to_eval and (total_step % 500 == 0):
+            if to_eval and (total_step % num_batches == 0):
                 evaluate(sess, QN_1, val_df, state_size, item_num, reward_click, reward_buy, results, pop_dict=pop_dict, pickle=pickle)
     return QN_1, sess
 
@@ -221,7 +221,7 @@ def sas_train(data_stats, replay_buf, val_df, results, losses, batch_size=512, e
             if total_step % 100 == 0:
                 print("the loss in %dth batch is: %f" % (total_step, loss))
                 losses.append(loss)
-            if to_eval and (total_step % 500 == 0):
+            if to_eval and (total_step % num_batches == 0):
                 eval_sasrec(sess, SAS, val_df, state_size, item_num, results, pickle=pickle, data_dir=data_dir)
     return SAS, sess
 

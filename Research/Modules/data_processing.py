@@ -25,26 +25,70 @@ def preprocess_books(filename):
     ##########remove items with <=2 interactions
     df['valid_item'] = df.item_id.map(df.groupby('item_id')['session_id'].size() > 2)
     df = df.loc[df.valid_item].drop('valid_item', axis=1)
-    
     sorted_df = df.sort_values(by=['session_id', 'timestamp'])
     sorted_df.to_csv('books_data/init_sorted_events.csv', index=None, header=True)
     return df
 
-def set_books_reward_progress(df, is_buy_progress_criterion=75):
+def set_books_reward_progress(df_books, is_buy_progress_criterion=75):
+    df = df_books.copy()
     df['is_buy'] = (df['progress'] >= is_buy_progress_criterion).astype(int)
     df = df.drop(['progress', 'rating'], axis=1)
-    df.to_csv('books_data/rating_reward_books.csv', index=None, header=True)
+    df = df.sort_values(by=['session_id', 'timestamp'])
+    df.to_csv('books_data/progress_reward_books.csv', index=None, header=True)
     return df
 
-def set_books_reward_rating(df, is_buy_rating_criterion=4.0):
+def set_books_reward_rating(df_books, is_buy_rating_criterion=4.0):
+    df = df_books.copy()
     df['is_buy'] = (df['rating'] >= is_buy_rating_criterion).astype(int)
     df = df.drop(['progress', 'rating'], axis=1)
+    df = df.sort_values(by=['session_id', 'timestamp'])
     df.to_csv('books_data/rating_reward_books.csv', index=None, header=True)
     return df
 
-def set_books_reward_author(df, item_info_df):
-    merged_df = df.merge(item_info_df[['id', 'authors']], how='left', left_on='item_id', right_on='id')
-    merged_df['is_buy'] = merged_df.groupby(['session_id', 'authors'])['item_id'].transform(lambda x: 1 if x.nunique() > 1 else 0)
+def func_auth(group):
+    new = []
+    author_set = set()
+    for idx, row in group.iterrows():
+        cur_a_set = set(row['authors'])
+        if bool(author_set & cur_a_set):
+            row['is_buy'] = 1
+        author_set.update(cur_a_set)
+        new.append(row)
+    return pd.DataFrame(new)
+
+
+def set_books_reward_author(df_books, item_info_df):
+    df = df_books.copy()
+    merged_df = df.merge(item_info_df[['id', 'authors']], how='left', left_on='item_id', right_on='id').drop(['id'], axis=1)
+    merged_df['authors'] = merged_df['authors'].str.split(',')
+    merged_df['is_buy'] = 0
+    merged_df = merged_df.groupby('session_id').apply(func_auth).reset_index(drop=True)
+    merged_df = merged_df.drop(['authors', 'progress', 'rating'], axis=1)
+    merged_df = merged_df.sort_values(by=['session_id', 'timestamp'])
+    merged_df.to_csv('books_data/author_reward_books.csv', index=None, header=True)
+    return merged_df
+
+def func_genre(group):
+    new = []
+    genre_set = set()
+    for idx, row in group.iterrows():
+        cur_g_set = set(row['genres'])
+        if bool(genre_set & cur_g_set):
+            row['is_buy'] = 1
+        genre_set.update(cur_g_set)
+        new.append(row)
+    return pd.DataFrame(new)
+
+
+def set_books_reward_genre(df_books, item_info_df):
+    df = df_books.copy()
+    merged_df = df.merge(item_info_df[['id', 'genres']], how='left', left_on='item_id', right_on='id').drop(['id'], axis=1)
+    merged_df['genres'] = merged_df['genres'].str.split(',')
+    merged_df['is_buy'] = 0
+    merged_df = merged_df.groupby('session_id').apply(func_genre).reset_index(drop=True)
+    merged_df = merged_df.drop(['genres', 'progress', 'rating'], axis=1)
+    merged_df = merged_df.sort_values(by=['session_id', 'timestamp'])
+    merged_df.to_csv('books_data/genres_reward_books.csv', index=None, header=True)
     return merged_df
 
 
@@ -180,4 +224,21 @@ def create_pop_dict(data_dir='data', filename='sorted_events.df'):
 
     with open(os.path.join(data_directory, 'pop_dict.txt'), 'w') as f:
         f.write(str(pop_dict))
-    
+
+def df_create_pop_dict(df_books):
+    replay_buffer_behavior = df_books
+    total_actions=replay_buffer_behavior.shape[0]
+    pop_dict={}
+    for index, row in replay_buffer_behavior.iterrows():
+        action=row['item_id']
+        if action in pop_dict:
+            pop_dict[action]+=1
+        else:
+            pop_dict[action]=1
+        if index%100000==0:
+            print (index/100000)
+    for key in pop_dict:
+        pop_dict[key]=float(pop_dict[key])/float(total_actions)
+
+    with open('pop_dict.txt', 'w') as f:
+        f.write(str(pop_dict))
